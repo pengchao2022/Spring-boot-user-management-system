@@ -16,7 +16,6 @@ pipeline {
         DOCKER_IMAGE = "${ECR_REPO}:${env.BUILD_NUMBER}"
         APP_NAME = "user-management-system"
         VPC_NAME = "comic-website-prod-vpc"  
-        TERRAFORM_DIR = "terraform-api-gateway"
     }
     
     options {
@@ -166,6 +165,13 @@ pipeline {
                                 -n ${KUBE_NAMESPACE} --timeout=600s
                         """
                         
+                        // 获取 NLB DNS 名称
+                        sh """
+                            echo "获取 NLB DNS 名称..."
+                            NLB_DNS=\$(kubectl get service user-management-nlb -n ${KUBE_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+                            echo "🎯 NLB DNS: \$NLB_DNS"
+                        """
+                        
                         // 显示部署状态
                         sh """
                             echo "=== 部署状态 ==="
@@ -190,67 +196,22 @@ pipeline {
                 script {
                     echo "=== 健康检查 ==="
                     
-                    // 动态获取 NLB DNS 进行健康检查
-                    def NLB_DNS = sh(
-                        script: "kubectl get svc user-management-nlb -n ${KUBE_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'",
-                        returnStdout: true
-                    ).trim()
-                    
+                    // 通过 NLB 进行健康检查
                     sh """
                         echo "通过 NLB 进行健康检查..."
-                        echo "NLB DNS: ${NLB_DNS}"
-                        echo "测试健康检查端点..."
-                        curl -s http://${NLB_DNS}/api/health || echo "健康检查请求失败"
-                    """
-                    
-                    // 保存 NLB DNS 到环境变量供后续使用
-                    env.NLB_DNS = NLB_DNS
-                }
-            }
-        }
-
-        // ========== 部署 API Gateway ==========
-        stage('Deploy API Gateway(Terraform)') {
-            steps {
-                script {
-                    withCredentials([[
-                        $class: 'AmazonWebServicesCredentialsBinding',
-                        credentialsId: 'dev-user-aws-credentials',
-                        accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                        secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
-                    ]]) {
-                        dir("${TERRAFORM_DIR}") {
-                            sh """
-                                echo "=== 部署 API Gateway ==="
-                                
-                                # 显示当前 Terraform 文件
-                                echo "=== Terraform 文件列表 ==="
-                                ls -la
-                                echo ""
-                                echo "=== terraform.tfvars 内容 ==="
-                                cat terraform.tfvars || echo "无法读取 terraform.tfvars"
-                                
-                                echo "初始化 Terraform..."
-                                terraform init -input=false
-                                
-                                echo "执行 Terraform Plan..."
-                                terraform plan -input=false
-                                
-                                echo "应用 Terraform 配置..."
-                                terraform apply -auto-approve -input=false
-                                
-                                echo "获取输出信息..."
-                                terraform output -json > tf_output.json
-                                
-                                # 保存 API Gateway URL 到文件，供后续阶段使用
-                                terraform output -raw api_gateway_invoke_url > ../api_gateway_url.txt 2>/dev/null || echo "无法获取 API Gateway URL"
-                            """
+                        NLB_DNS=\$(kubectl get service user-management-nlb -n ${KUBE_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+                        echo "NLB DNS: \$NLB_DNS"
+                        
+                        if [ ! -z "\$NLB_DNS" ]; then
+                            echo "等待 NLB 完全就绪..."
+                            sleep 30
                             
-                            // 读取 Terraform 输出
-                            def tfOutput = readJSON file: 'tf_output.json'
-                            env.API_GATEWAY_URL = tfOutput.api_gateway_invoke_url?.value ?: ""
-                        }
-                    }
+                            echo "测试健康检查端点..."
+                            curl -s http://\$NLB_DNS/api/health || echo "健康检查请求失败"
+                        else
+                            echo "未获取到 NLB DNS，跳过健康检查"
+                        fi
+                    """
                 }
             }
         }
@@ -271,57 +232,18 @@ pipeline {
         success {
             script {
                 echo "🎉 部署成功!"
+                echo "📦 应用已部署到 EKS"
+                echo "🌐 通过 NLB 访问应用"
                 
-                // 安全地获取 NLB DNS（如果 Health Check 阶段失败）
-                def NLB_DNS = env.NLB_DNS ?: sh(
-                    script: "kubectl get svc user-management-nlb -n ${KUBE_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo 'NLB_NOT_AVAILABLE'",
-                    returnStdout: true
-                ).trim()
-                
-                // 安全地获取 API Gateway URL
-                def API_GATEWAY_URL = ""
-                try {
-                    if (fileExists('api_gateway_url.txt')) {
-                        API_GATEWAY_URL = readFile('api_gateway_url.txt').trim()
-                    } else if (env.API_GATEWAY_URL) {
-                        API_GATEWAY_URL = env.API_GATEWAY_URL
-                    } else {
-                        API_GATEWAY_URL = "API_GATEWAY_NOT_DEPLOYED"
-                    }
-                } catch (Exception e) {
-                    API_GATEWAY_URL = "API_GATEWAY_NOT_DEPLOYED"
-                }
-                
-                // 构建输出信息
-                def message = """
-📦 应用已部署到 EKS
-🌐 NLB 地址: https://${NLB_DNS}
-"""
-                
-                if (API_GATEWAY_URL != "API_GATEWAY_NOT_DEPLOYED" && API_GATEWAY_URL != "") {
-                    message += """
-🎯 API Gateway 地址: ${API_GATEWAY_URL}
-
-🔗 API Gateway 访问:
-   ❤️  健康检查: ${API_GATEWAY_URL}api/health
-   👥 用户管理: ${API_GATEWAY_URL}api/users
-   📚 API文档: ${API_GATEWAY_URL}swagger-ui.html
-"""
-                }
-                
-                message += """
-💡 架构说明:
-   用户 → NLB → EKS Pods (直接访问)
-"""
-                
-                if (API_GATEWAY_URL != "API_GATEWAY_NOT_DEPLOYED" && API_GATEWAY_URL != "") {
-                    message += "   用户 → API Gateway → NLB → EKS Pods"
-                }
-                
-                echo message
-                
-                // 清理临时文件
-                sh "rm -f api_gateway_url.txt || true"
+                sh """
+                    NLB_DNS=\$(kubectl get service user-management-nlb -n ${KUBE_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+                    if [ ! -z "\$NLB_DNS" ]; then
+                        echo "🔗 NLB 地址: http://\$NLB_DNS"
+                        echo "❤️  健康检查: http://\$NLB_DNS/api/health"
+                        echo "👥 用户管理: http://\$NLB_DNS/api/users"
+                        echo "📚 API文档: http://\$NLB_DNS/swagger-ui.html"
+                    fi
+                """
             }
         }
         failure {
@@ -337,6 +259,9 @@ pipeline {
                     echo ""
                     echo "Service 状态:"
                     kubectl get service -n ${KUBE_NAMESPACE} || true
+                    echo ""
+                    echo "最近的事件:"
+                    kubectl get events -n ${KUBE_NAMESPACE} --sort-by='.lastTimestamp' | tail -10 || true
                 """
             }
         }

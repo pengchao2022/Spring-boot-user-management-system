@@ -3,14 +3,11 @@ kind: Service
 metadata:
   name: user-management-service
   namespace: user-management
-  labels:
-    app: user-management-app
 spec:
+  type: ClusterIP  # 保持不变，这是内部服务
   selector:
     app: user-management-app
   ports:
-  - port: 80
-    targetPort: 8080
-    protocol: TCP
-    name: http
-  type: ClusterIP
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
