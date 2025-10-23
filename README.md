@@ -17,6 +17,10 @@ Spring boot backend service use the API Gateway as the door to communicate with 
       - Internal NLB with SSL HTTPS for security
       - Dockerfile to package src code 
 
+- Jenkinsfile for CD (deploy to EKS) 
+
+- GitLab CI for code repository (private repo for security)
+
 ## Usage
 
 - Check the API gateway URL:
