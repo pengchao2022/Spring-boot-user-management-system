@@ -90,7 +90,7 @@ pengchaoma@Pengchaos-MacBook-Pro Spring-boot-user-management-system % curl -v ht
   }'
 
 {"success":true,"message":"用户创建成功","data":{"id":1,"username":"pengchao.ma","email":"18510656167@163.com","phone":"18510656167","department":null,"position":null,"createdAt":"2025-10-23T14:36:49.149424985","updatedAt":"2025-10-23T14:36:49.149424985"}}
-
+```
 - Search user with Phone number:
 ```shell
 curl -X GET "https://oqwgfxwlo7.execute-api.us-east-1.amazonaws.com/prod/api/users?phone=18510656167"
